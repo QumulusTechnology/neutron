@@ -2027,13 +2027,35 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
             portbindings.HOST_ID: 'fake-src',
             portbindings.PROFILE: {
                 ovn_const.MIGRATING_ATTR: 'fake-dest',
-            }
+            },
+            portbindings.VIF_TYPE: portbindings.VIF_TYPE_OVS,
         }
         with mock.patch.object(
                 self.mech_driver._ovn_client._sb_idl, 'is_col_present',
                 return_value=True):
             options = self.mech_driver._ovn_client._get_port_options(port)
         self.assertEqual('rarp', options.options['activation-strategy'])
+        self.assertEqual('fake-src,fake-dest',
+                         options.options['requested-chassis'])
+
+    def test__get_port_options_migrating_vhostuser(self):
+        port = {
+            'id': 'virt-port',
+            'mac_address': '00:00:00:00:00:00',
+            'device_owner': 'device_owner',
+            'network_id': 'foo',
+            'fixed_ips': [],
+            portbindings.HOST_ID: 'fake-src',
+            portbindings.PROFILE: {
+                ovn_const.MIGRATING_ATTR: 'fake-dest',
+            },
+            portbindings.VIF_TYPE: portbindings.VIF_TYPE_VHOST_USER,
+        }
+        with mock.patch.object(
+                self.mech_driver._ovn_client._sb_idl, 'is_col_present',
+                return_value=True):
+            options = self.mech_driver._ovn_client._get_port_options(port)
+        self.assertNotIn('activation-strategy', options.options)
         self.assertEqual('fake-src,fake-dest',
                          options.options['requested-chassis'])
 
@@ -2584,6 +2606,12 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
                 network['network']['mtu'] = new_mtu
                 fake_ctx = mock.MagicMock(current=network['network'])
                 fake_ctx.plugin_context.session.is_active = False
+                external_ids = {
+                    ovn_const.OVN_NETTYPE_EXT_ID_KEY: const.TYPE_GENEVE,
+                    ovn_const.OVN_NETWORK_MTU_EXT_ID_KEY: str(new_mtu),
+                }
+                self.nb_ovn.ls_get.return_value.execute.return_value = (
+                    mock.Mock(external_ids=external_ids))
 
                 self.mech_driver.update_network_postcommit(fake_ctx)
 

@@ -484,7 +484,11 @@ class OVNClient(object):
                         # Block traffic on destination host until libvirt sends
                         # a RARP packet from it to inform network about the new
                         # location of the port
-                        options['activation-strategy'] = 'rarp'
+                        # TODO(ihrachys) Remove this once OVN properly supports
+                        # activation of DPDK ports (bug 2092407)
+                        if (port[portbindings.VIF_TYPE] !=
+                                portbindings.VIF_TYPE_VHOST_USER):
+                            options['activation-strategy'] = 'rarp'
 
             # Virtual ports can not be bound by using the
             # requested-chassis mechanism, ovn-controller will create the
@@ -1604,18 +1608,20 @@ class OVNClient(object):
                         for net in networks) else 'false'
         return reside_redir_ch
 
-    def _gen_router_port_options(self, port, network=None):
+    def _gen_router_port_options(self, port):
         options = {}
         admin_context = n_context.get_admin_context()
-        if network is None:
-            network = self._plugin.get_network(admin_context,
-                                               port['network_id'])
-        # For VLAN type networks we need to set the
+        ls_name = utils.ovn_name(port['network_id'])
+        ls = self._nb_idl.ls_get(ls_name).execute(check_error=True)
+        network_type = ls.external_ids[ovn_const.OVN_NETTYPE_EXT_ID_KEY]
+        network_mtu = int(
+            ls.external_ids[ovn_const.OVN_NETWORK_MTU_EXT_ID_KEY])
+        # For provider networks (VLAN, FLAT types) we need to set the
         # "reside-on-redirect-chassis" option so the routing for this
         # logical router port is centralized in the chassis hosting the
         # distributed gateway port.
         # https://github.com/openvswitch/ovs/commit/85706c34d53d4810f54bec1de662392a3c06a996
-        if network.get(pnet.NETWORK_TYPE) == const.TYPE_VLAN:
+        if network_type in [const.TYPE_VLAN, const.TYPE_FLAT]:
             reside_redir_ch = self._get_reside_redir_for_gateway_port(
                 port['device_id'])
             options[ovn_const.LRP_OPTIONS_RESIDE_REDIR_CH] = reside_redir_ch
@@ -1637,10 +1643,10 @@ class OVNClient(object):
                     admin_context, filters={'id': network_ids})
                 if ovn_conf.is_ovn_emit_need_to_frag_enabled():
                     for net in networks:
-                        if net['mtu'] > network['mtu']:
+                        if net['mtu'] > network_mtu:
                             options[
                                 ovn_const.OVN_ROUTER_PORT_GW_MTU_OPTION] = str(
-                                    network['mtu'])
+                                    network_mtu)
                             break
                 if ovn_conf.is_ovn_distributed_floating_ip():
                     # NOTE(ltomasbo): For VLAN type networks connected through
@@ -1964,7 +1970,11 @@ class OVNClient(object):
             ovn_const.OVN_REV_NUM_EXT_ID_KEY: str(
                 utils.get_revision_number(network, ovn_const.TYPE_NETWORKS)),
             ovn_const.OVN_AZ_HINTS_EXT_ID_KEY:
-                ','.join(common_utils.get_az_hints(network))}}
+                ','.join(common_utils.get_az_hints(network)),
+            # NOTE(ralonsoh): it is not considered the case of multiple
+            # segments.
+            ovn_const.OVN_NETTYPE_EXT_ID_KEY: network.get(pnet.NETWORK_TYPE),
+        }}
 
         # Enable IGMP snooping if igmp_snooping_enable is enabled in Neutron
         value = 'true' if ovn_conf.is_igmp_snooping_enabled() else 'false'
@@ -2014,7 +2024,7 @@ class OVNClient(object):
         commands = []
         for port in ports:
             lrp_name = utils.ovn_lrouter_port_name(port['id'])
-            options = self._gen_router_port_options(port, prov_net)
+            options = self._gen_router_port_options(port)
             commands.append(self._nb_idl.update_lrouter_port(
                 lrp_name, if_exists=True, options=options))
         self._transaction(commands, txn=txn)

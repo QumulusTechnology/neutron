@@ -39,6 +39,7 @@ from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.db import l3_attrs_db
 from neutron.db import ovn_hash_ring_db as hash_ring_db
 from neutron.db import ovn_revision_numbers_db as revision_numbers_db
+from neutron.objects import network as network_obj
 from neutron.objects import ports as ports_obj
 from neutron.objects import router as router_obj
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovn_db_sync
@@ -799,16 +800,17 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
         periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
         spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
         run_immediately=True)
-    def check_vlan_distributed_ports(self):
-        """Check VLAN distributed ports
+    def check_provider_distributed_ports(self):
+        """Check provider (VLAN and FLAT) distributed ports
         Check for the option "reside-on-redirect-chassis" value for
-        distributed VLAN ports.
+        distributed ports which belongs to the FLAT or VLAN networks.
         """
         context = n_context.get_admin_context()
         cmds = []
-        # Get router ports belonging to VLAN networks
+        # Get router ports belonging to VLAN or FLAT networks
         vlan_nets = self._ovn_client._plugin.get_networks(
-            context, {pnet.NETWORK_TYPE: [n_const.TYPE_VLAN]})
+            context, {pnet.NETWORK_TYPE: [n_const.TYPE_VLAN,
+                                          n_const.TYPE_FLAT]})
         vlan_net_ids = [vn['id'] for vn in vlan_nets]
         router_ports = self._ovn_client._plugin.get_ports(
             context, {'network_id': vlan_net_ids,
@@ -1229,6 +1231,30 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
             'NB_Global', '.', external_ids={
                 ovn_const.OVN_FIP_DISTRIBUTED_KEY: str(distributed)}).execute(
                     check_error=True)
+        raise periodics.NeverAgain()
+
+    # TODO(ralonsoh): Remove this method in the E cycle (SLURP release)
+    @has_lock_periodic(spacing=600, run_immediately=True)
+    def set_network_type(self):
+        """Add the network type to the Logical_Switch registers"""
+        context = n_context.get_admin_context()
+        net_segments = network_obj.NetworkSegment.get_objects(context)
+        net_segments = {seg.network_id: seg.network_type
+                        for seg in net_segments}
+        cmds = []
+        for ls in self._nb_idl.ls_list().execute(check_error=True):
+            if ovn_const.OVN_NETTYPE_EXT_ID_KEY not in ls.external_ids:
+                net_id = ls.name.replace('neutron-', '')
+                external_ids = {
+                    ovn_const.OVN_NETTYPE_EXT_ID_KEY: net_segments[net_id]}
+                cmds.append(self._nb_idl.db_set(
+                    'Logical_Switch', ls.uuid, ('external_ids', external_ids)))
+
+        if cmds:
+            with self._nb_idl.transaction(check_error=True) as txn:
+                for cmd in cmds:
+                    txn.add(cmd)
+
         raise periodics.NeverAgain()
 
 
