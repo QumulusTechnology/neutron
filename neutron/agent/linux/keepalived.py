@@ -27,6 +27,7 @@ from oslo_utils import fileutils
 
 from neutron._i18n import _
 from neutron.agent.linux import external_process
+from neutron.agent.linux import utils as linux_utils
 from neutron.cmd import runtime_checks as checks
 from neutron.common import utils
 
@@ -126,12 +127,11 @@ class KeepalivedVirtualRoute(object):
     """A virtual route entry of a keepalived configuration."""
 
     def __init__(self, destination, nexthop, interface_name=None,
-                 scope=None, track=True):
+                 scope=None):
         self.destination = destination
         self.nexthop = nexthop
         self.interface_name = interface_name
         self.scope = scope
-        self.track = track
 
     def build_config(self):
         output = self.destination
@@ -141,7 +141,7 @@ class KeepalivedVirtualRoute(object):
             output += ' dev %s' % self.interface_name
         if self.scope:
             output += ' scope %s' % self.scope
-        if not self.track and _is_keepalived_use_no_track_supported():
+        if _is_keepalived_use_no_track_supported():
             output += ' no_track'
         # NOTE(mstinsky): neutron and keepalived are adding the same routes on
         # primary routers. With this we ensure that both are adding the routes
@@ -224,7 +224,7 @@ class KeepalivedInstance(object):
         self.authentication = (auth_type, password)
 
     def add_vip(self, ip_cidr, interface_name, scope):
-        track = interface_name not in self.track_interfaces
+        track = interface_name in self.track_interfaces
         vip = KeepalivedVipAddress(ip_cidr, interface_name, scope, track=track)
         if vip not in self.vips:
             self.vips.append(vip)
@@ -504,8 +504,12 @@ class KeepalivedManager(object):
             # will be orphan and prevent keepalived process to be spawned.
             # A check here will let the l3-agent to kill the orphan process
             # and spawn keepalived successfully.
+            # Also removes stale pid file
             if vrrp_pm.active:
-                vrrp_pm.disable()
+                vrrp_pm.disable(delete_pid_file=False)
+
+            linux_utils.delete_if_exists(self.get_vrrp_pid_file_name(pid_file),
+                                         run_as_root=vrrp_pm.run_as_root)
 
             cmd = ['keepalived', '-P',
                    '-f', config_path,
