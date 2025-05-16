@@ -110,7 +110,9 @@ jobs:
           source kolla/bin/activate
           pip install -U pip
           pip install docker setuptools
-          pip install git+https://github.com/QumulusTechnology/kolla@${BRANCH}
+          # temp override for kolla-ansible until we update major version to 2025.1
+          pip install git+https://github.com/QumulusTechnology/kolla@master
+          # pip install git+https://github.com/QumulusTechnology/kolla@${BRANCH}
 
       - name: Create kolla-build.conf
         run: |
@@ -139,10 +141,9 @@ jobs:
           location = ${CWD}
           EOF"
 
-
       - name: Create template-overrides.j2
         run: |
-          sudo bash -c 'cat << EOF > /etc/kolla/template-overrides.j2
+          sudo bash -c "cat << EOF > /etc/kolla/template-overrides.j2
           {% extends parent_template %}
 
           {% block base_ubuntu_package_sources_list %}
@@ -153,9 +154,14 @@ jobs:
           {% endblock %}
 
           {% block ${REPOSITORY}_base_footer %}
-          RUN pip uninstall tap-as-a-service
+          RUN pip uninstall tap-as-a-service && \
+            pip install --upgrade neutron-fwaas==22.0.0
           {% endblock %}
-          EOF'
+
+          {% block neutron_server_footer %}
+          RUN pip install git+https://git@github.com/QumulusTechnology/neutron-fwaas.git@qumulus/${OPENSTACK_VERSION}
+          {% endblock %}
+          EOF"
 
       - name: Build docker images
         run: |
